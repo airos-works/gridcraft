@@ -59,6 +59,19 @@
   <a href="#license-and-credits">License and credits</a>
 </p>
 
+<!-- airos-ci:latest-builds:start -->
+## Latest builds
+
+Built automatically by air/OS CI from commit `45e5d79` on 2026-10-31 ([all files](https://github.com/airos-works/gridcraft/releases/tag/latest)).
+
+| Architecture | Package |
+|---|---|
+| arm64 | [gridcraft-0.7.0.airos1-4-arm64.hpkg](https://github.com/airos-works/gridcraft/releases/download/latest/gridcraft-0.7.0.airos1-4-arm64.hpkg) |
+| x86_64 | [gridcraft-0.7.0.airos1-4-x86_64.hpkg](https://github.com/airos-works/gridcraft/releases/download/latest/gridcraft-0.7.0.airos1-4-x86_64.hpkg) |
+
+Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60207-2163-g761d19d6d1, arm64 hrev60207-2161-g9ce0b7382e.
+<!-- airos-ci:latest-builds:end -->
+
 ## A look around
 
 <table>
