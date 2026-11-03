@@ -1,16 +1,16 @@
 name gridcraft
-version 0.7.0~airos1-4
+version 0.16.0~airos1-1
 architecture x86_64
 summary "Spreadsheet for Excel workbooks"
-description "GridCraft is an open-source spreadsheet for Microsoft Excel workbooks (.xlsx, .xlsm, .xls, .xlsb, .ods and CSV) with an Excel-style ribbon, formulas and functions, formatting, tables, charts, sorting and filtering, and PDF export. This air/OS build hosts GridCraft's interface in a native window, with the system's file panels, clipboard, cursors, locale and file types."
+description "GridCraft is an open-source spreadsheet for Microsoft Excel workbooks (.xlsx, .xlsm, .xls, .xlsb, .ods and CSV) with an Excel-style ribbon, formulas and functions, formatting, tables, charts, sorting and filtering, and PDF export. This air/OS build hosts GridCraft's interface in a native window, with the system's file panels, clipboard, printers, cursors, locale and file types."
 packager "GridCraft for air/OS"
 vendor "storytold"
 copyrights { "2026 GridCraft contributors" }
 licenses { "MIT" "Apache v2" }
-urls { "https://github.com/jmgasper/gridcraft" }
+urls { "https://github.com/airos-works/gridcraft" }
 provides {
-	gridcraft = 0.7.0
-	app:GridCraft = 0.7.0
+	gridcraft = 0.16.0
+	app:GridCraft = 0.16.0
 }
 requires {
 	haiku >= r1~beta6

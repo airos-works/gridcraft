@@ -1,6 +1,6 @@
 # GridCraft on air/OS (and Haiku)
 
-Status: first working build, 2026-10-17. GridCraft runs as a native air/OS application: the
+Status: first working build 2026-10-17 (0.7.0); synced with upstream 0.16.0 on 2026-11-04. GridCraft runs as a native air/OS application: the
 whole interface (ribbon, Backstage, dialogs, the grid, charts) and everything below it are the
 same code as on the other desktops; only the host around the interface is new. The host is the
 one WordCraft's air/OS port uses (`storytold/wordcraft`'s fork, `apps/wordcraft-haiku`), adapted
@@ -13,7 +13,8 @@ to GridCraft's `SheetApp`.
 | eframe + winit window | `BApplication` + `BWindow` + `BView` (`native/host.cpp`) |
 | wgpu renders egui's meshes | software rasteriser draws them into a `BBitmap` (`src/raster.rs`) |
 | rfd file dialogs | `BFilePanel` Open and Save panels |
-| arboard clipboard | `BClipboard` (`text/plain` and `text/html`) |
+| arboard clipboard | `BClipboard` (`text/plain`, `text/html`, PNG and JPEG pictures) |
+| craft-print (CUPS, Windows spooler) | the Be print kit (`BPrintJob`, `native/print.cpp`, `src/print.rs`) |
 | winit cursors | `BCursor` system cursors |
 | xdg-open for links | `BUrl::OpenWithPreferredApplication` (http, https and mailto only, as on the desktop) |
 | OS locale | `BLocaleRoster` (preferred languages, formatting conventions) |
@@ -23,7 +24,9 @@ eframe, winit and wgpu don't run on Haiku, so `SheetApp` (the interface, `crates
 driven directly: the host turns Be API messages into egui input, runs `SheetApp::logic` and
 `SheetApp::ui` as eframe does, and turns egui's output back into window, cursor, clipboard and
 URL calls. The control server and the log file are the desktop app's own modules
-(`apps/gridcraft/src/control_server.rs`, `logging.rs`). Nothing below the interface knows it is
+(`apps/gridcraft/src/control_server.rs`, `logging.rs`); as on the desktop, a control connection's
+first line must carry the run's token (`--control-token`, `GRIDCRAFT_CONTROL_TOKEN`, or the one
+the app writes to `~/.cache/gridcraft/control-<port>.token`). Nothing below the interface knows it is
 on Haiku apart from the font folders (`/boot/system/data/fonts`, Noto Sans for the interface and
 cells, Noto Sans CJK, Thai and Symbols as fallbacks).
 
@@ -97,9 +100,25 @@ The platform-neutral parts (the rasteriser, the key tables) are tested anywhere:
 - `RUST_LOG=GridCraft*=debug` logs keys, clipboard output and each frame's timings (interface,
   tessellation, rasteriser, present) to `~/config/settings/GridCraft/logs/`.
 
+### Printing
+
+File › Print lists the print server's printers (`~/config/settings/printers`). Print hands the
+print-ready PDF to a worker that rasterises each page with hayro at the printer's resolution (at
+most 300 dpi) and spools it through a `BPrintJob`; the print server then runs the printer's
+driver. Shift+Print (or `GRIDCRAFT_PRINT_SETUP=1`) opens the driver's page setup and job setup
+first; their answers are kept per printer in `~/config/settings/GridCraft/printers`. The module
+is the one the other Craft hosts share (WordCraft's, with the `gc_print_` prefix).
+
+### Updates
+
+air/OS installs and updates GridCraft as a package (pkgman, SoftwareUpdater), so the start-up
+update check never runs and Check for Updates only says so.
+
 ## Known gaps
 
-- No printing yet (Haiku's print kit is not wired up); export to PDF works.
+- One window: upstream's desktop app (0.16) gives each workbook window a native window of its own
+  (`doc_windows`, craft-window); here every workbook shares the one `BWindow`, which shows the
+  active one (View › Switch Windows, the Window list), as in the web build.
 - No input methods (`B_INPUT_METHOD_EVENT`) yet, so CJK input methods don't reach the grid.
 - The window's size and position aren't remembered between runs, and fullscreen and the
   maximized state aren't reported (Haiku has zoom, not maximize).
@@ -129,4 +148,4 @@ The upstream icons for other platforms remain separate. Native previews can be
 rendered on Haiku with `BIconUtils::GetVectorIcon`; review at 16, 32, 64 and 128px
 on light and dark backgrounds before changing the drawing.
 
-Package version `0.7.0~airos1-4` includes this icon update.
+Package version `0.7.0~airos1-4` introduced this icon.

@@ -1,15 +1,18 @@
 //! The app's system services on air/OS: Open and Save panels (`BFilePanel`), the clipboard
-//! (`BClipboard`: text and HTML), links, and making GridCraft the preferred application for
+//! (`BClipboard`: text, HTML and pictures), printing (the Be print kit, `print`), links, and making GridCraft the preferred application for
 //! spreadsheets (`BMimeType`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, channel};
 
-use gridcraft_ui_egui::Services;
+use gridcraft_ui_egui::{Services, printing};
 
 use crate::host::{self, RawEvent, kind};
+use crate::print;
 
 /// The application's signature (also in `GridCraft.rdef`).
 pub const SIGNATURE: &str = "application/x-vnd.storytold-GridCraft";
@@ -93,6 +96,14 @@ pub fn clipboard_text() -> Option<String> {
     clip_text("text/plain")
 }
 
+/// The clipboard's picture (PNG or JPEG), for Paste when it holds no text.
+pub fn clipboard_image() -> Option<image::RgbaImage> {
+    ["image/png", "image/jpeg"].iter().find_map(|mime| {
+        let bytes = host::clipboard_get(mime)?;
+        image::load_from_memory(&bytes).map_err(|e| log::warn!("clipboard {mime}: {e}")).ok().map(|i| i.to_rgba8())
+    })
+}
+
 /// Opens an http, https or mailto link with its preferred application (the desktop app's
 /// rule: the system never gets anything else).
 fn open_link(target: &str) {
@@ -105,6 +116,71 @@ fn open_link(target: &str) {
     }
 }
 
+/// The window's title (the active workbook's), which names print jobs in the print server's queue.
+static TITLE: Mutex<String> = Mutex::new(String::new());
+
+/// Notes the window's title, for the next print job's name.
+pub fn set_title(title: &str) {
+    if let Ok(mut t) = TITLE.lock() {
+        title.clone_into(&mut t);
+    }
+}
+
+/// File › Print's printer list: the print server's printers, found on a worker.
+fn discover_printers() -> Receiver<Vec<printing::Printer>> {
+    let (tx, rx) = channel();
+    let spawned = std::thread::Builder::new().name("print discovery".into()).spawn(move || {
+        let printers = print::printers().into_iter().map(|p| printing::Printer { name: p.name, label: String::new(), default: p.default });
+        let _ = tx.send(printers.collect());
+    });
+    if let Err(e) = spawned {
+        log::error!("starting printer discovery: {e}");
+    }
+    rx
+}
+
+/// File › Print's Print: the print-ready PDF drawn into a `BPrintJob` for the chosen printer on
+/// a worker. Shift+Print (or `GRIDCRAFT_PRINT_SETUP=1`) opens the printer driver's page setup and
+/// job setup first (paper, resolution, the driver's own options); their answers are kept for that
+/// printer in `~/config/settings/GridCraft/printers` and used by every later job on it.
+fn submit_print(pdf: Vec<u8>, settings: printing::Settings) -> Receiver<Result<String, String>> {
+    let (tx, rx) = channel();
+    let title = TITLE.lock().map(|t| t.clone()).unwrap_or_default();
+    let title = title.strip_suffix(" — Edited").unwrap_or(&title).trim();
+    let options = print::Options {
+        title: if title.is_empty() { "GridCraft".to_owned() } else { title.to_owned() },
+        copies: settings.copies.clamp(1, 999),
+        collate: true,
+        duplex: settings.duplex.map(|d| match d {
+            printing::Duplex::Off => print::Duplex::Off,
+            printing::Duplex::LongEdge => print::Duplex::LongEdge,
+            printing::Duplex::ShortEdge => print::Duplex::ShortEdge,
+        }),
+        grayscale: settings.grayscale,
+        // libprint's PostScript and PCL drivers start in monochrome: a workbook prints in colour
+        // unless Grayscale or the printer's job setup says otherwise.
+        color: true,
+        // Each sheet's page setup decides its pages' orientation.
+        landscape: None,
+        setup: print::shift_down() || std::env::var_os("GRIDCRAFT_PRINT_SETUP").is_some_and(|v| v != "0"),
+        pages: None,
+    };
+    let store = print::Store::new(crate::config_dir().map(|d| d.join("printers")));
+    let spawned = std::thread::Builder::new().name("print".into()).spawn(move || {
+        let started = std::time::Instant::now();
+        let result = print::print_pdf(Some(&settings.printer), pdf, &options, &store).map_err(|e| e.to_string());
+        match &result {
+            Ok(receipt) => log::info!("printed on {} in {:.1} s: {receipt}", settings.printer, started.elapsed().as_secs_f32()),
+            Err(e) => log::warn!("printing on {}: {e}", settings.printer),
+        }
+        let _ = tx.send(result);
+    });
+    if let Err(e) = spawned {
+        log::error!("starting the print worker: {e}");
+    }
+    rx
+}
+
 /// The services the app gets on air/OS.
 pub fn services(dialogs: Rc<Dialogs>) -> Services {
     let (open, picture, save) = (dialogs.clone(), dialogs.clone(), dialogs);
@@ -114,10 +190,13 @@ pub fn services(dialogs: Rc<Dialogs>) -> Services {
         )),
         paste_html: Some(Box::new(|| clip_text("text/html"))),
         paste_text: Some(Box::new(clipboard_text)),
+        paste_image: Some(Box::new(clipboard_image)),
         pick_open: Some(Box::new(move || open.pick(false, "", OPEN_EXTENSIONS, "Open"))),
         pick_picture: Some(Box::new(move || picture.pick(false, "", PICTURE_EXTENSIONS, "Insert Picture"))),
         pick_save: Some(Box::new(move |suggested: &str| save.pick(true, &save_name(suggested), &[], "Save As"))),
         open_url: Some(Box::new(open_link)),
+        printers: Some(Box::new(discover_printers)),
+        print_native: Some(Box::new(submit_print)),
         ..Default::default()
     }
 }

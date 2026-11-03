@@ -31,8 +31,16 @@ egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
-# Pictures copied to the clipboard as PNG (egui's CopyImage).
+# Pictures copied to the clipboard as PNG (egui's CopyImage) and pasted from it.
 image = { workspace = true }
+# The desktop app's control server (`apps/gridcraft/src/control_server.rs`): its token check, the
+# token's random bits, and the log file's timestamps (`logging.rs`).
+gridcraft-mcp = { workspace = true }
+getrandom = "0.4"
+# File › Print: the print-ready PDF's pages rasterised for the Be print kit (`src/print.rs`, as
+# in the other Craft hosts).
+hayro = "0.7.1"
+chrono = { workspace = true }
 
 [build-dependencies]
 cc = "1"

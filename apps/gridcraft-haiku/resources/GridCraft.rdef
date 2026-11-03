@@ -10,11 +10,11 @@ resource app_flags B_MULTIPLE_LAUNCH;
 
 resource app_version {
 	major = 0,
-	middle = 7,
+	middle = 16,
 	minor = 0,
 	variety = B_APPV_DEVELOPMENT,
 	internal = 1,
-	short_info = "GridCraft 0.7.0",
+	short_info = "GridCraft 0.16.0",
 	long_info = "GridCraft for air/OS: an open-source spreadsheet for Excel workbooks (MIT or Apache-2.0)."
 };
 

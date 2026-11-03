@@ -26,6 +26,8 @@ impl Default for Runtime {
 }
 
 /// Ask for a check; the next frame's `tick` starts it. A manual one reports every outcome.
+/// (air/OS updates the package instead: `SheetApp::check_for_updates`.)
+#[cfg_attr(target_os = "haiku", allow(dead_code))]
 pub(crate) fn start(app: &mut SheetApp, manual: bool) {
     if manual {
         app.updates_rt.manual = true;

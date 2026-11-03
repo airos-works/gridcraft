@@ -6,22 +6,28 @@
 //! system's file panels, clipboard, cursors, file types and locale. eframe, winit and wgpu don't
 //! run on Haiku; nothing below the interface changes.
 //!
-//! Usage: `GridCraft [--sample NAME] [--control PORT] [FILE…]`, as the desktop app.
+//! Usage: `GridCraft [--sample NAME] [--control PORT [--control-token TOKEN]] [FILE…]`, as the
+//! desktop app.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 // Elsewhere only the platform-neutral parts build (and are tested).
 #![cfg_attr(not(target_os = "haiku"), allow(dead_code))]
 
 mod keys;
+mod print;
 mod raster;
 
+/// The desktop app's control server and log file, as they are (`apps/gridcraft/src`). An inline
+/// module with a folder path, so their own submodules (`logging/tests.rs`) resolve as there.
 #[cfg(target_os = "haiku")]
-#[path = "../../gridcraft/src/control_server.rs"]
-mod control_server;
+#[path = "../../gridcraft/src"]
+mod desktop {
+    pub mod control_server;
+    pub mod logging;
+}
+#[cfg(target_os = "haiku")]
+use desktop::{control_server, logging};
 #[cfg(target_os = "haiku")]
 mod host;
-#[cfg(target_os = "haiku")]
-#[path = "../../gridcraft/src/logging.rs"]
-mod logging;
 #[cfg(target_os = "haiku")]
 mod services;
 #[cfg(target_os = "haiku")]
@@ -56,12 +62,14 @@ mod haiku {
 GridCraft — the GridCraft spreadsheet for air/OS
 
 USAGE:
-  GridCraft [--sample NAME] [--control PORT] [FILE…]
+  GridCraft [--sample NAME] [--control PORT [--control-token TOKEN]] [FILE…]
 
 OPTIONS:
   --sample NAME       open a sample workbook (sales by default)
   --control PORT      start the localhost control server on PORT, for agents and scripts
                       (or set GRIDCRAFT_CONTROL_PORT); see docs/control-protocol.md
+  --control-token T   the token clients must send first (or GRIDCRAFT_CONTROL_TOKEN); without
+                      one a random token is written to ~/.cache/gridcraft
   --version           print the version
   -h, --help          print this help
 ";
@@ -72,7 +80,7 @@ OPTIONS:
 
     /// The settings folder: `~/config/settings/GridCraft`, beside other applications'. A copy
     /// started without `HOME` (by a server, say) uses Haiku's one home folder.
-    fn config_dir() -> Option<PathBuf> {
+    pub fn config_dir() -> Option<PathBuf> {
         let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map_or_else(|| PathBuf::from("/boot/home"), PathBuf::from);
         Some(home.join("config/settings/GridCraft"))
     }
@@ -102,7 +110,7 @@ OPTIONS:
         {
             let saved = serde_json::from_slice(&b).ok().and_then(|v| gridcraft_ui_egui::i18n::saved_language(&v));
             let language = saved.unwrap_or(app.ui.language);
-            app.ui = ui;
+            app.ui = ui.at_startup();
             app.ui.language = language;
         }
         if let Ok(b) = std::fs::read(dir.join("prefs.json"))
@@ -139,11 +147,17 @@ OPTIONS:
     struct Args {
         sample: Option<String>,
         control: Option<u16>,
+        control_token: Option<String>,
         files: Vec<String>,
     }
 
     fn args() -> Args {
-        let mut a = Args { sample: None, control: std::env::var("GRIDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok()), files: Vec::new() };
+        let mut a = Args {
+            sample: None,
+            control: std::env::var("GRIDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok()),
+            control_token: std::env::var("GRIDCRAFT_CONTROL_TOKEN").ok(),
+            files: Vec::new(),
+        };
         let mut it = std::env::args_os().skip(1).map(|s| s.to_string_lossy().into_owned()).peekable();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -155,6 +169,7 @@ OPTIONS:
                         std::process::exit(2);
                     }
                 },
+                "--control-token" => a.control_token = it.next(),
                 "--version" | "-V" => {
                     let _ = std::io::Write::write_fmt(
                         &mut std::io::stdout(),
@@ -191,7 +206,7 @@ OPTIONS:
         load_prefs(&mut app);
         SheetApp::setup_context_for_language(&ctx, app.ui.dark, app.ui.language);
         if let Some(port) = args.control {
-            match control_server::start(port, ctx.clone()) {
+            match control_server::start(port, args.control_token.clone(), ctx.clone()) {
                 Ok(rx) => app.control_rx = Some(rx),
                 Err(e) => log::error!("control channel on port {port}: {e}"),
             }

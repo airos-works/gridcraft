@@ -39,7 +39,7 @@ pub struct Shell {
     repaint_at: Option<Instant>,
     /// When other threads asked for one (`request_repaint` from a worker).
     woken_for: Arc<Mutex<Option<Instant>>>,
-    screenshots: Vec<egui::UserData>,
+    screenshots: Vec<egui::ScreenshotCallback>,
     title: String,
     /// Files saved (or about to be) that need their MIME type, until when to keep trying.
     to_type: Vec<(PathBuf, Instant)>,
@@ -233,6 +233,7 @@ impl Shell {
                     unit: egui::MouseWheelUnit::Line,
                     delta: vec2(-ev.dx, -ev.dy),
                     phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
                     modifiers: self.modifiers,
                 });
             }
@@ -284,9 +285,7 @@ impl Shell {
                     return;
                 }
                 if m.command && active == Key::V || m.shift && active == Key::Insert {
-                    if let Some(t) = services::clipboard_text().map(|t| t.replace("\r\n", "\n")) {
-                        self.events.push(Event::Paste(t));
-                    }
+                    self.paste();
                     return;
                 }
             }
@@ -316,13 +315,13 @@ impl Shell {
         }
     }
 
-    /// The desktop app's per-frame logic (`apps/gridcraft`): the app's own, and the window's
-    /// close button, which waits for a print job being handed over.
+    /// The desktop app's per-frame logic (`apps/gridcraft`). The window's close button asks
+    /// about unsaved workbooks first (the app cancels the close and closes the window itself once
+    /// they are answered) and waits for a print job being handed over.
     fn logic(&mut self, ctx: &egui::Context) {
         self.app.logic(ctx);
-        self.app.poll_printing(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && !self.app.printing.busy() {
-            self.quit = true;
+        if ctx.input(|i| i.viewport().close_requested()) && self.app.printing.busy() {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
         }
     }
 
@@ -350,7 +349,7 @@ impl Shell {
             ..Default::default()
         };
         let mut raw = raw;
-        self.app.raw_input_hook(&mut raw);
+        self.app.raw_input_hook(&self.ctx, &mut raw);
         let ctx = self.ctx.clone();
         let t0 = Instant::now();
         let mut out = ctx.run_ui(raw, |ui| {
@@ -377,16 +376,23 @@ impl Shell {
                         log::warn!("couldn't open {}", u.url);
                     }
                 }
+                // Haiku has no PRIMARY selection (X11's middle-click paste).
+                egui::OutputCommand::TextSelectionSettled(_) => {}
             }
         }
         let mut delay = Duration::MAX;
         if let Some(vp) = out.viewport_output.get(&ViewportId::ROOT) {
+            // A close the app didn't cancel (unsaved workbooks are asked about first) quits.
+            if close && !vp.commands.iter().any(|c| matches!(c, ViewportCommand::CancelClose)) {
+                self.quit = true;
+            }
             delay = vp.repaint_delay;
             if let Some(t) = &vp.builder.title
                 && *t != self.title
             {
                 self.title.clone_from(t);
                 host::set_title(t);
+                services::set_title(t);
             }
             for cmd in &vp.commands {
                 self.command(cmd);
@@ -419,9 +425,8 @@ impl Shell {
         self.raster.free_textures(&out.textures_delta);
         // Applied: epaint checks (in debug builds) that no texture update is dropped unhandled.
         out.textures_delta.clear();
-        for user_data in std::mem::take(&mut self.screenshots) {
-            let image = Arc::new(self.raster.image());
-            self.events.push(Event::Screenshot { viewport_id: ViewportId::ROOT, user_data, image });
+        for shot in std::mem::take(&mut self.screenshots) {
+            shot.complete(Arc::new(self.raster.image()));
             delay = Duration::ZERO;
         }
         if (ppp - self.ppp).abs() > f32::EPSILON {
@@ -447,6 +452,7 @@ impl Shell {
                 if *t != self.title {
                     self.title.clone_from(t);
                     host::set_title(t);
+                    services::set_title(t);
                 }
             }
             ViewportCommand::InnerSize(s) => host::window_command(WindowCommand::ResizeTo(s.x * ppp, s.y * ppp)),
@@ -458,11 +464,7 @@ impl Shell {
             ViewportCommand::Screenshot(data) => self.screenshots.push(data.clone()),
             ViewportCommand::RequestCut => self.events.push(Event::Cut),
             ViewportCommand::RequestCopy => self.events.push(Event::Copy),
-            ViewportCommand::RequestPaste => {
-                if let Some(t) = services::clipboard_text() {
-                    self.events.push(Event::Paste(t.replace("\r\n", "\n")));
-                }
-            }
+            ViewportCommand::RequestPaste => self.paste(),
             _ => {}
         }
     }
@@ -497,6 +499,16 @@ impl Shell {
                 now < *until
             }
         });
+    }
+
+    /// The clipboard's text as a paste, or (with no text) its picture, as egui's integrations do.
+    fn paste(&mut self) {
+        if let Some(t) = services::clipboard_text() {
+            self.events.push(Event::Paste(t.replace("\r\n", "\n")));
+        } else if let Some(img) = services::clipboard_image() {
+            let size = [img.width() as usize, img.height() as usize];
+            self.events.push(Event::PasteImage(Arc::new(egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()))));
+        }
     }
 
     /// What quitting does besides closing the window (`on_exit` in the desktop app).

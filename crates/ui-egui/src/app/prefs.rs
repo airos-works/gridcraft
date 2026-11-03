@@ -1,4 +1,4 @@
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "haiku")))]
 use super::updates_ui;
 use super::{SheetApp, desktop_theme};
 
@@ -50,18 +50,24 @@ impl SheetApp {
 
     /// Look for a newer release once, in the background, as the desktop app starts (a no-op on the
     /// web). A found release opens the update prompt; nothing is shown when GridCraft is current.
+    /// air/OS installs and updates GridCraft as a package (pkgman, SoftwareUpdater): no check there.
     pub fn start_update_check(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "haiku")))]
         updates_ui::start(self, false);
     }
 
     /// Help ▸ Check for Updates…: look now, and say so when GridCraft is up to date or the check fails.
     pub fn check_for_updates(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "haiku")))]
         updates_ui::start(self, true);
         #[cfg(target_arch = "wasm32")]
         {
             self.message = Some(("GridCraft".into(), "The web version is always the latest release.".into()));
+        }
+        #[cfg(target_os = "haiku")]
+        {
+            self.message =
+                Some(("GridCraft".into(), "GridCraft is updated with the system's packages: SoftwareUpdater installs newer versions.".into()));
         }
     }
 }
