@@ -179,8 +179,12 @@ update check never runs and Check for Updates only says so.
 - No input methods (`B_INPUT_METHOD_EVENT`) yet, so CJK input methods don't reach the grid.
 - The window's size and position aren't remembered between runs, and fullscreen and the
   maximized state aren't reported (Haiku has zoom, not maximize).
-- Direct presentation is not the default yet (RADV on the Framework 13 lost the device after
-  the frame buffer import; being verified for all Craft hosts).
+- Direct presentation is not the default yet. RADV on the Framework 13 lost the device a few
+  seconds after the frame buffer import: re-showing the last frame made an empty submission,
+  whose wait the old air/OS RADV could not do (no sync files; fixed in mesa-amdgpu 1a02b91f).
+  The presenter no longer makes empty submissions, and a frame within one pixel of the window
+  (175 % rounding) still goes direct (2026-11-07); the default flips once the laptop has
+  verified it for every Craft host.
 
 ## Native application icon (2026-10-26)
 
