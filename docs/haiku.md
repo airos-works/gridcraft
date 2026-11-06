@@ -1,6 +1,6 @@
 # GridCraft on air/OS (and Haiku)
 
-Status: first working build 2026-10-17 (0.7.0); synced with upstream 0.16.0 on 2026-11-04. GridCraft runs as a native air/OS application: the
+Status: first working build 2026-10-17 (0.7.0); synced with upstream 0.16.0 on 2026-11-04; drawn with Vulkan since 2026-11-07 (0.16.0~airos1-2). GridCraft runs as a native air/OS application: the
 whole interface (ribbon, Backstage, dialogs, the grid, charts) and everything below it are the
 same code as on the other desktops; only the host around the interface is new. The host is the
 one WordCraft's air/OS port uses (`storytold/wordcraft`'s fork, `apps/wordcraft-haiku`), adapted
@@ -11,7 +11,7 @@ to GridCraft's `SheetApp`.
 | Desktop app (`apps/gridcraft`) | air/OS app (`apps/gridcraft-haiku`) |
 | --- | --- |
 | eframe + winit window | `BApplication` + `BWindow` + `BView` (`native/host.cpp`) |
-| wgpu renders egui's meshes | software rasteriser draws them into a `BBitmap` (`src/raster.rs`) |
+| wgpu renders egui's meshes | wgpu/Vulkan renders them into a texture shown in the window (`src/gpu.rs`, `src/present.rs`); a software rasteriser (`src/raster.rs`) without a usable GPU |
 | rfd file dialogs | `BFilePanel` Open and Save panels |
 | arboard clipboard | `BClipboard` (`text/plain`, `text/html`, PNG and JPEG pictures) |
 | craft-print (CUPS, Windows spooler) | the Be print kit (`BPrintJob`, `native/print.cpp`, `src/print.rs`) |
@@ -20,7 +20,7 @@ to GridCraft's `SheetApp`.
 | OS locale | `BLocaleRoster` (preferred languages, formatting conventions) |
 | Finder / Explorer open | `B_REFS_RECEIVED` (Tracker double-click, Open With, drops) |
 
-eframe, winit and wgpu don't run on Haiku, so `SheetApp` (the interface, `crates/ui-egui`) is
+eframe and winit don't run on Haiku, so `SheetApp` (the interface, `crates/ui-egui`) is
 driven directly: the host turns Be API messages into egui input, runs `SheetApp::logic` and
 `SheetApp::ui` as eframe does, and turns egui's output back into window, cursor, clipboard and
 URL calls. The control server and the log file are the desktop app's own modules
@@ -43,12 +43,69 @@ and the package's post-install script does the same before it has ever run.
 
 ### Drawing
 
-egui's meshes are premultiplied sRGB triangles. `raster.rs` draws them on the processor:
-axis-aligned rectangles (cells, panels, glyphs, pictures) and flat triangles take fast paths;
-the frame is split into bands of 32 rows drawn in parallel (rayon), and a band whose shapes,
-clips and textures are unchanged since the last frame is skipped, so a blinking caret or a
-keystroke redraws a few bands, not the window. Only the rectangle that changed is copied into
-the `BBitmap` and redrawn.
+Since 0.16.0~airos1-2 the window is drawn with Vulkan when the machine has a usable hardware
+adapter, as the other Craft hosts on air/OS do (`apps/gridcraft-haiku/src/gpu.rs`): egui's
+triangles (the grid, the ribbon, charts, sparklines, pictures) are drawn by egui-wgpu into a
+BGRA texture, the same renderer upstream's eframe uses on the other desktops. Haiku has no wgpu
+surface, so the presenter (`src/present.rs`, `damage.rs`, `scanout.rs`, shared with WordCraft,
+PdfCraft and PhotoCraft) compares the frame with what app_server shows, 64 px tile by tile on
+the GPU, and copies back only the tiles that changed. A frame drawn from exactly the same
+triangles, size and textures as the one on the screen is not drawn again (egui repaints more
+often than its output changes; about 30 % of the frames in the measurement below), so an idle
+or hovering window costs almost nothing.
+
+- `GRIDCRAFT_RENDERER=auto|vulkan|cpu`: auto (the default) uses Vulkan on a discrete or
+  integrated GPU (a discrete one first) and the rasteriser otherwise; vulkan fails at start
+  without one; cpu always rasterises.
+- `GRIDCRAFT_PRESENT=readback|full|direct`: readback (the default) as above; full reads the
+  whole frame back every time; direct (experimental, not the default until RADV is verified)
+  copies frames straight into the screen's frame buffer through air/OS's
+  `VkImportScanoutMemoryHAIKU` (the window is a `BDirectWindow`).
+- The device asks only for wgpu's downlevel limits, with the adapter's own largest texture size
+  (at least 4096 px) and buffer size, and no optional feature, so the smaller Vulkan drivers of
+  the arm64 images (V3DV, PowerVR, Turnip, Panfrost) qualify. Every adapter passed over is logged
+  with the reason (`GridCraft::gpu: Vulkan adapter … not used: …`), as is the one chosen.
+- A failed device creation, a lost device, an uncaptured wgpu error or a panic in a GPU call
+  (the first frame included) switches to the rasteriser for good, at once and without losing the
+  open workbooks: the rasteriser keeps egui's textures all along.
+- wgpu's Vulkan backend is enabled for Haiku by the vendored `wgpu`, `wgpu-core` and
+  `wgpu-core-deps-windows-linux-android` 30.0.1 (`vendor/README.md`, from WordCraft).
+
+Upstream's desktop app uses the GPU only through eframe's egui-wgpu renderer (`graphics.rs` only
+picks the backend); charts and sparklines are egui shapes, and pictures
+egui textures, so all of them are drawn on the GPU here too. PDF export and printing render on
+the processor on every platform.
+
+The software rasteriser (`raster.rs`) draws egui's meshes on the processor: axis-aligned
+rectangles (cells, panels, glyphs, pictures) and flat triangles take fast paths; the frame is
+split into bands of 32 rows drawn in parallel (rayon), and a band whose shapes, clips and
+textures are unchanged since the last frame is skipped, so a blinking caret or a keystroke
+redraws a few bands, not the window. Only the rectangle that changed is copied into the
+`BBitmap` and redrawn. Its worker threads start only when it is the renderer (none while the
+GPU draws), at most 4 (`RAYON_NUM_THREADS` overrides): on air/OS more cost more in waking than
+they save (8 used 5 % more processor time than 4 in the measurement below).
+
+The window's monitor (`BPrivate::get_display_frame`, an app_server round trip) is remembered
+between frames and asked again only when the window moves or the screens change, and the window
+is asked for its state once a frame.
+
+Measured on the x399 workstation (GeForce GTX 1070, NVK, 3840 x 2160 at 200 %, a 2880 x 1800 px
+window), `--sample sales`, the same 100 inputs through the control channel (arrow keys, Page
+Down/Up, 20 cell edits, 40 pointer moves, 60 ms apart):
+
+| | GridCraft CPU | app_server CPU | frame (UI + tessellation + drawing, median / p90) | threads |
+| --- | --- | --- | --- | --- |
+| 0.16.0~airos1-1 (rasteriser, 8 workers) | 7.04 s | 0.25 s | 2.1 + 0.3 + 4.1 / 7.2 ms | 12 |
+| airos1-2, `GRIDCRAFT_RENDERER=cpu` (4 workers) | 6.59 s | 0.03 s | 2.4 + 0.3 + 4.1 / 7.4 ms | 9 |
+| airos1-2, Vulkan, readback (default) | 2.27 s | 0.03 s | 2.1 + 0.3 + 5.0 / 5.4 ms | 7 |
+| airos1-2, Vulkan, `GRIDCRAFT_PRESENT=direct` | 3.66 s | 0.03 s | | 7 |
+
+Ten idle seconds cost nothing in every case (no frames). The GPU frame's 5 ms is almost all
+waiting: encoding takes 0.12 ms, and the presenter waits twice for the GPU (the changed tiles,
+then their pixels; a typical interaction frame reads back one 64 px tile), so its latency is a
+millisecond above the rasteriser's median on this machine but steadier (p90 5.4 against 7.2 ms,
+no 20 ms full redraws), with a third of the processor time. Start-up: the Vulkan device and
+renderer are ready about 160 ms after the interface starts.
 
 On an air/OS desktop drawn at a higher density (175 % on the Framework laptop, 200 % on 4K
 monitors), the frame is rendered in device pixels and drawn with `DrawBitmap(bitmap, device
@@ -122,7 +179,8 @@ update check never runs and Check for Updates only says so.
 - No input methods (`B_INPUT_METHOD_EVENT`) yet, so CJK input methods don't reach the grid.
 - The window's size and position aren't remembered between runs, and fullscreen and the
   maximized state aren't reported (Haiku has zoom, not maximize).
-- No GPU path: very large windows at 200 % cost more processor time per full redraw.
+- Direct presentation is not the default yet (RADV on the Framework 13 lost the device after
+  the frame buffer import; being verified for all Craft hosts).
 
 ## Native application icon (2026-10-26)
 

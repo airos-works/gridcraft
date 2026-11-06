@@ -2152,9 +2152,11 @@ dependencies = [
 name = "gridcraft-haiku"
 version = "0.16.0"
 dependencies = [
+ "ash",
  "cc",
  "chrono",
  "egui",
+ "egui-wgpu",
  "getrandom 0.4.3",
  "gridcraft-engine",
  "gridcraft-mcp",
@@ -2162,8 +2164,10 @@ dependencies = [
  "hayro",
  "image",
  "log",
+ "pollster 1.0.1",
  "rayon",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

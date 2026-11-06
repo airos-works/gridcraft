@@ -2,9 +2,10 @@
 //!
 //! The same interface as the desktop app (`gridcraft-ui-egui`), hosted natively: a
 //! `BApplication` and `BWindow` from the Be API (`native/host.cpp`) take the input and show the
-//! frames, which egui's output becomes through a software rasteriser (`raster`), with the
-//! system's file panels, clipboard, cursors, file types and locale. eframe, winit and wgpu don't
-//! run on Haiku; nothing below the interface changes.
+//! frames, which egui's output becomes with Vulkan (`gpu`, shown by `present`) or, without a
+//! usable hardware Vulkan adapter, through a software rasteriser (`raster`), with the system's
+//! file panels, clipboard, cursors, file types and locale. eframe and winit don't run on Haiku;
+//! nothing below the interface changes.
 //!
 //! Usage: `GridCraft [--sample NAME] [--control PORT [--control-token TOKEN]] [FILE…]`, as the
 //! desktop app.
@@ -12,6 +13,7 @@
 // Elsewhere only the platform-neutral parts build (and are tested).
 #![cfg_attr(not(target_os = "haiku"), allow(dead_code))]
 
+mod damage;
 mod keys;
 mod print;
 mod raster;
@@ -27,7 +29,13 @@ mod desktop {
 #[cfg(target_os = "haiku")]
 use desktop::{control_server, logging};
 #[cfg(target_os = "haiku")]
+mod gpu;
+#[cfg(target_os = "haiku")]
 mod host;
+#[cfg(target_os = "haiku")]
+mod present;
+#[cfg(target_os = "haiku")]
+mod scanout;
 #[cfg(target_os = "haiku")]
 mod services;
 #[cfg(target_os = "haiku")]
@@ -41,6 +49,24 @@ fn main() {
 
 #[cfg(target_os = "haiku")]
 use haiku::*;
+
+/// Starts the rasteriser's worker threads, once, when it is the renderer (they cost nothing
+/// while the GPU draws): up to 4 by default, as more cost more in waking than they save on a
+/// frame on air/OS; `RAYON_NUM_THREADS` overrides it. Named for the system's process lists.
+/// Only the rasteriser uses rayon in this program.
+pub fn raster_threads() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let workers = std::env::var("RAYON_NUM_THREADS")
+            .ok()
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| (1..=64).contains(n))
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().clamp(1, 4)));
+        if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(workers).thread_name(|i| format!("GridCraft raster {i}")).build_global() {
+            log::warn!("rasteriser threads: {e}");
+        }
+    });
+}
 
 #[cfg(target_os = "haiku")]
 fn main() {
@@ -221,7 +247,14 @@ OPTIONS:
             }
             app.open_path(f);
         }
-        let mut shell = shell::Shell::new(app, ctx, dialogs, scale);
+        let mut shell = match shell::Shell::new(app, ctx, dialogs, scale) {
+            Ok(shell) => shell,
+            Err(e) => {
+                log::error!("{e}");
+                host::alert("GridCraft", &e);
+                return;
+            }
+        };
         shell.run();
         shell.finish();
     }
@@ -259,12 +292,6 @@ OPTIONS:
         }
         if prefs_enabled() {
             services::claim_document_types();
-        }
-        // The rasteriser's workers: up to 8 (more cost more in waking than they save on a
-        // frame), named for the system's process lists.
-        let workers = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(1, 8));
-        if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(workers).thread_name(|i| format!("GridCraft raster {i}")).build_global() {
-            log::warn!("rasteriser threads: {e}");
         }
         let scale = host::ui_scale();
         let px = |v: f32| v * scale;

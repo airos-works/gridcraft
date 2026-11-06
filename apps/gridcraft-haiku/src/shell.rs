@@ -1,6 +1,6 @@
 //! The window's event loop on the interface thread: Haiku's input becomes egui's, SheetApp runs
 //! its frame, and egui's output goes back to the window and the system (title, cursor,
-//! clipboard, links) and, through the software rasteriser, to the screen.
+//! clipboard, links) and, through Vulkan (`gpu`) or the software rasteriser, to the screen.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -19,6 +19,10 @@ pub struct Shell {
     pub app: SheetApp,
     ctx: egui::Context,
     raster: Rasterizer,
+    /// The GPU renderer; `None` draws with `raster` (no usable hardware Vulkan adapter,
+    /// `GRIDCRAFT_RENDERER=cpu`, or the device was lost or failed). The rasteriser keeps egui's
+    /// textures either way, so it can take over between two frames without losing anything.
+    gpu: Option<crate::gpu::Gpu>,
     dialogs: Rc<Dialogs>,
     start: Instant,
     /// egui's points to device pixels, as of the last frame, and the system's own: the interface
@@ -94,8 +98,38 @@ fn button(bit: i32) -> Option<PointerButton> {
     })
 }
 
+/// Runs `f`; a panic inside it (a wgpu validation failure, a driver gone wrong) becomes an
+/// error, so the window falls back to the rasteriser instead of losing the open workbooks.
+fn guard<T>(what: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(format!("{what} failed with an internal error (logged)")))
+}
+
+/// The renderer `GRIDCRAFT_RENDERER` asks for: `auto` (the default: Vulkan on a usable hardware
+/// adapter, else the rasteriser), `vulkan` (Vulkan or an error) or `cpu`.
+fn start_gpu() -> Result<Option<crate::gpu::Gpu>, String> {
+    let mode = std::env::var("GRIDCRAFT_RENDERER").unwrap_or_else(|_| "auto".into());
+    let gpu = match mode.as_str() {
+        "cpu" => None,
+        "auto" | "" | "vulkan" => match guard("GPU startup", crate::gpu::Gpu::new) {
+            Ok(gpu) => Some(gpu),
+            Err(e) if mode == "vulkan" => return Err(format!("GRIDCRAFT_RENDERER=vulkan: {e}")),
+            Err(e) => {
+                log::warn!("GPU startup: {e}; using the software rasteriser");
+                None
+            }
+        },
+        _ => return Err("GRIDCRAFT_RENDERER must be auto, cpu or vulkan".into()),
+    };
+    log::info!("air/OS renderer: {}", if gpu.is_some() { "Vulkan" } else { "CPU" });
+    if gpu.is_none() {
+        crate::raster_threads();
+    }
+    Ok(gpu)
+}
+
 impl Shell {
-    pub fn new(app: SheetApp, ctx: egui::Context, dialogs: Rc<Dialogs>, ui_scale: f32) -> Self {
+    pub fn new(app: SheetApp, ctx: egui::Context, dialogs: Rc<Dialogs>, ui_scale: f32) -> Result<Self, String> {
+        let gpu = start_gpu()?;
         let dev = host::device_scale();
         let native_ppp = ui_scale * dev;
         let woken_for: Arc<Mutex<Option<Instant>>> = Arc::default();
@@ -107,10 +141,11 @@ impl Shell {
             }
             host::wake();
         });
-        Self {
+        Ok(Self {
             app,
             ctx,
             raster: Rasterizer::new(),
+            gpu,
             dialogs,
             start: Instant::now(),
             ppp: native_ppp,
@@ -130,7 +165,7 @@ impl Shell {
             title: String::new(),
             to_type: Vec::new(),
             last_saved: Vec::new(),
-        }
+        })
     }
 
     /// Runs until the app quits.
@@ -142,16 +177,47 @@ impl Shell {
             if happened || due {
                 self.frame();
             }
+            self.present_chores();
+        }
+    }
+
+    /// What the presenter does between frames: the last frame again where the window moved on
+    /// the screen, and app_server's copy catching up with frames that went straight to the screen.
+    fn present_chores(&mut self) {
+        let dev = self.dev;
+        let Some(gpu) = &mut self.gpu else { return };
+        let result = if gpu.wants_present() {
+            guard("GPU present", || gpu.present_again(dev))
+        } else if gpu.sync_due().is_some_and(|at| at <= Instant::now()) {
+            guard("GPU sync", || gpu.sync(dev))
+        } else {
+            return;
+        };
+        if let Err(e) = result {
+            self.drop_gpu(&e);
+        }
+    }
+
+    /// Back to the software rasteriser for good: the device failed (`why`). The next frame,
+    /// at once, draws everything with it; the workbooks and egui's textures are untouched.
+    fn drop_gpu(&mut self, why: &str) {
+        if let Some(gpu) = self.gpu.take() {
+            log::error!("GPU: {why}; switching to the software rasteriser");
+            // Dropping waits for the device; a panic there must not take the interface down.
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(gpu))).is_err() {
+                log::warn!("GPU: releasing the device failed");
+            }
+            crate::raster_threads();
+            self.raster.invalidate();
+            self.repaint_at = Some(Instant::now());
         }
     }
 
     /// When the next frame is due, if one is.
     fn next_due(&self) -> Option<Instant> {
         let woken = self.woken_for.lock().ok().and_then(|w| *w);
-        match (self.repaint_at, woken) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let sync = self.gpu.as_ref().and_then(|g| g.sync_due());
+        [self.repaint_at, woken, sync].into_iter().flatten().min()
     }
 
     fn timeout(&self) -> Option<Duration> {
@@ -296,8 +362,7 @@ impl Shell {
         }
     }
 
-    fn viewport_info(&self, close: bool) -> ViewportInfo {
-        let w = host::window_info();
+    fn viewport_info(&self, w: &host::WindowInfo, close: bool) -> ViewportInfo {
         let k = self.dev / self.ppp;
         let rect = |r: [f32; 4]| egui::Rect::from_min_max(pos2(r[0], r[1]) * k, pos2(r[2], r[3]) * k);
         ViewportInfo {
@@ -326,6 +391,9 @@ impl Shell {
     }
 
     fn frame(&mut self) {
+        if self.gpu.as_ref().is_some_and(|g| g.faulted()) {
+            self.drop_gpu("the device was lost or failed");
+        }
         if self.dev_checked.elapsed() > Duration::from_secs(2) {
             self.check_density();
         }
@@ -336,11 +404,13 @@ impl Shell {
             return;
         }
         let close = std::mem::take(&mut self.close_requested);
+        // Once a frame: each call locks the window.
+        let window = host::window_info();
         let raw = egui::RawInput {
             viewport_id: ViewportId::ROOT,
-            viewports: std::iter::once((ViewportId::ROOT, self.viewport_info(close))).collect(),
+            viewports: std::iter::once((ViewportId::ROOT, self.viewport_info(&window, close))).collect(),
             screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(w, h) / self.ppp)),
-            max_texture_side: Some(8192),
+            max_texture_side: Some(self.gpu.as_ref().map_or(8192, |g| g.max_texture_side().min(16384))),
             time: Some(self.start.elapsed().as_secs_f64()),
             predicted_dt: 1.0 / 60.0,
             events: std::mem::take(&mut self.events),
@@ -401,32 +471,71 @@ impl Shell {
 
         // Draw.
         let ppp = out.pixels_per_point;
+        // The rasteriser keeps every texture even while the GPU draws, so it can take over.
         self.raster.set_textures(&out.textures_delta);
-        let minimized = host::window_info().minimized;
-        if !minimized {
+        let mut failed = None;
+        if let Some(gpu) = &mut self.gpu
+            && let Err(e) = guard("GPU textures", || {
+                gpu.set_textures(&out.textures_delta);
+                Ok(())
+            })
+        {
+            failed = Some(e);
+        }
+        if let Some(e) = failed.take() {
+            self.drop_gpu(&e);
+        }
+        if !window.minimized {
             let t1 = Instant::now();
             let prims = ctx.tessellate(out.shapes, ppp);
             let t2 = Instant::now();
             let clear = ctx.global_style().visuals.panel_fill;
             let (pw, ph) = (w as usize, h as usize);
-            let dirty = self.raster.render([pw, ph], &prims, ppp, clear);
+            let dev = self.dev;
+            // The presenter shows GPU frames itself; the rasteriser's are shown below.
+            let dirty = match &mut self.gpu {
+                Some(gpu) => {
+                    let size = [u32::try_from(pw).unwrap_or(u32::MAX), u32::try_from(ph).unwrap_or(u32::MAX)];
+                    if let Err(e) = guard("GPU frame", || gpu.render(size, &prims, ppp, clear, dev)) {
+                        failed = Some(e);
+                    }
+                    None
+                }
+                None => self.raster.render([pw, ph], &prims, ppp, clear),
+            };
+            if let Some(e) = failed.take() {
+                // Drawn again at once, by the rasteriser.
+                self.drop_gpu(&e);
+                delay = Duration::ZERO;
+            }
             let t3 = Instant::now();
             if let Some(dirty) = dirty {
                 host::present(self.raster.pixels(), pw, ph, dirty, self.dev);
             }
             log::debug!(
-                "frame {pw}x{ph}: ui {:.1} ms, tessellate {:.1} ms, raster {:.1} ms, present {:.1} ms, dirty {dirty:?}",
+                "frame {pw}x{ph}: ui {:.1} ms, tessellate {:.1} ms, {} {:.1} ms, present {:.1} ms, dirty {dirty:?}",
                 (t1 - t0).as_secs_f64() * 1e3,
                 (t2 - t1).as_secs_f64() * 1e3,
+                if self.gpu.is_some() { "GPU" } else { "raster" },
                 (t3 - t2).as_secs_f64() * 1e3,
                 t3.elapsed().as_secs_f64() * 1e3
             );
         }
         self.raster.free_textures(&out.textures_delta);
+        if let Some(gpu) = &mut self.gpu {
+            gpu.free_textures(&out.textures_delta);
+        }
         // Applied: epaint checks (in debug builds) that no texture update is dropped unhandled.
         out.textures_delta.clear();
         for shot in std::mem::take(&mut self.screenshots) {
-            shot.complete(Arc::new(self.raster.image()));
+            let image = match self.gpu.as_mut() {
+                Some(gpu) => guard("GPU screenshot", || gpu.image()).unwrap_or_else(|e| {
+                    log::warn!("screenshot: {e}");
+                    egui::ColorImage::default()
+                }),
+                None => self.raster.image(),
+            };
+            shot.complete(Arc::new(image));
             delay = Duration::ZERO;
         }
         if (ppp - self.ppp).abs() > f32::EPSILON {
