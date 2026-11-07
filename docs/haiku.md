@@ -180,6 +180,14 @@ is the one the other Craft hosts share (WordCraft's, with the `gc_print_` prefix
 air/OS installs and updates GridCraft as a package (pkgman, SoftwareUpdater), so the start-up
 update check never runs and Check for Updates only says so.
 
+### No ArtCraft marks
+
+Since `0.16.0~airos1-5` this fork carries no ArtCraft marks, as `docs/brand/LICENSE-brand.txt`
+requires of a published modified version: the mark files are removed (`docs/brand/README.md`),
+and on air/OS the About box's "Part of ArtCraft" says instead that the port is based on GridCraft
+by the ArtCraft team and is not an ArtCraft product. The app never painted the marks itself.
+Links to getartcraft.com and the Discord stay.
+
 ## Known gaps
 
 - One window: upstream's desktop app (0.16) gives each workbook window a native window of its own

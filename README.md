@@ -1,13 +1,4 @@
 <p align="center">
-  <a href="https://getartcraft.com/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
-    </picture>
-  </a>
-</p>
-
-<p align="center">
   <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.gridcraft.png" width="128" height="128" alt="GridCraft icon: a spreadsheet page on a green tile">
 </p>
 
@@ -20,7 +11,7 @@
 <p align="center">
   A fast, open-source, clean-room take on modern spreadsheet workflows. It runs natively on macOS,
   Windows, Linux and BSD, and in the browser via WebAssembly.<br>
-  <i>By the ArtCraft team.</i>
+  <i>This air/OS fork is based on <a href="https://github.com/storytold/gridcraft">GridCraft</a> by the ArtCraft team; it is not an ArtCraft product.</i>
 </p>
 
 <p align="center">
@@ -363,14 +354,9 @@ All UI icons are drawn in code and are original; the sample workbooks and every 
 this README were made with GridCraft itself. GridCraft bundles no fonts: it uses the fonts
 installed on your system.
 
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and GridCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
+The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team and are not covered by
+this license. This fork is a modified version, so as [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt)
+requires, the marks have been removed from it ([`docs/brand/README.md`](docs/brand/README.md)).
 
-<br>
-
-<p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
-</p>
+GridCraft for air/OS is based on [GridCraft](https://github.com/storytold/gridcraft) by the
+[ArtCraft](https://getartcraft.com/) team. It is not an ArtCraft product.
