@@ -44,6 +44,9 @@ pub struct Shell {
     /// When other threads asked for one (`request_repaint` from a worker).
     woken_for: Arc<Mutex<Option<Instant>>>,
     screenshots: Vec<egui::ScreenshotCallback>,
+    /// When the last frame started, and the shortest time between two ([`frame_interval`]).
+    last_frame: Instant,
+    min_interval: Duration,
     title: String,
     /// Files saved (or about to be) that need their MIME type, until when to keep trying.
     to_type: Vec<(PathBuf, Instant)>,
@@ -127,6 +130,18 @@ fn start_gpu() -> Result<Option<crate::gpu::Gpu>, String> {
     Ok(gpu)
 }
 
+/// The shortest time between two frames: one refresh of the window's screen (60 Hz when it
+/// doesn't say); `GRIDCRAFT_MAX_FPS` sets another rate, 0 none. Haiku has no vertical sync for a
+/// window's bitmap: an animation or a reply that asks for the next frame at once (egui's
+/// `request_repaint`) would otherwise draw the interface hundreds of times a second.
+fn frame_interval() -> Duration {
+    let fps = match std::env::var("GRIDCRAFT_MAX_FPS").ok().and_then(|v| v.trim().parse::<f64>().ok()).filter(|f| f.is_finite() && *f >= 0.0) {
+        Some(fps) => fps,
+        None => host::refresh_rate().map_or(60.0, f64::from),
+    };
+    if fps < 1.0 { Duration::ZERO } else { Duration::from_secs_f64(1.0 / fps.min(1000.0)) }
+}
+
 impl Shell {
     pub fn new(app: SheetApp, ctx: egui::Context, dialogs: Rc<Dialogs>, ui_scale: f32) -> Result<Self, String> {
         let gpu = start_gpu()?;
@@ -162,6 +177,8 @@ impl Shell {
             repaint_at: Some(Instant::now()),
             woken_for,
             screenshots: Vec::new(),
+            last_frame: Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now),
+            min_interval: frame_interval(),
             title: String::new(),
             to_type: Vec::new(),
             last_saved: Vec::new(),
@@ -175,7 +192,15 @@ impl Shell {
             let happened = self.drain();
             let due = self.take_due();
             if happened || due {
-                self.frame();
+                // At most one frame a refresh: input that comes sooner waits in `events` for it.
+                let since = self.last_frame.elapsed();
+                if since < self.min_interval {
+                    let at = Instant::now() + (self.min_interval - since);
+                    self.repaint_at = Some(at);
+                } else {
+                    self.last_frame = Instant::now();
+                    self.frame();
+                }
             }
             self.present_chores();
         }
@@ -323,7 +348,11 @@ impl Shell {
                 }
                 host::window_command(WindowCommand::Activate);
             }
-            kind::COLORS => self.check_density(),
+            // The screens changed (or the system colours): their density and refresh rate.
+            kind::COLORS => {
+                self.check_density();
+                self.min_interval = frame_interval();
+            }
             // The next frame picks up the new size, position or state.
             kind::RESIZED | kind::MOVED | kind::MINIMIZED => {}
             // A panel's answer after its caller stopped waiting has nobody to go to.

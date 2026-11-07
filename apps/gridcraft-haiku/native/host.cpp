@@ -1150,6 +1150,21 @@ gc_host_device_scale()
 }
 
 
+// The refresh rate of the window's screen (Hz), from its display mode's
+// timing; 0 when unknown.
+float
+gc_host_refresh_rate()
+{
+	BScreen screen(sWindow != NULL ? (BWindow*)sWindow : NULL);
+	display_mode mode;
+	if (!screen.IsValid() || screen.GetMode(&mode) != B_OK
+		|| mode.timing.h_total == 0 || mode.timing.v_total == 0)
+		return 0;
+	return mode.timing.pixel_clock * 1000.0f
+		/ ((float)mode.timing.h_total * mode.timing.v_total);
+}
+
+
 // Whether the panel colour (Appearance preferences) is dark.
 int32_t
 gc_host_dark()

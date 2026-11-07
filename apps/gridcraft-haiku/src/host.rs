@@ -76,6 +76,7 @@ unsafe extern "C" {
     fn gc_host_modifiers() -> u32;
     fn gc_host_ui_scale() -> f32;
     fn gc_host_device_scale() -> f32;
+    fn gc_host_refresh_rate() -> f32;
     fn gc_host_dark() -> i32;
     fn gc_host_locale(languages: *mut *mut c_char) -> *mut c_char;
     fn gc_free(data: *mut c_void);
@@ -354,6 +355,13 @@ pub fn device_scale() -> f32 {
     // SAFETY: no arguments.
     let s = unsafe { gc_host_device_scale() };
     if s.is_finite() && (1.0..=4.0).contains(&s) { s } else { 1.0 }
+}
+
+/// The refresh rate of the window's screen in Hz, if its display mode says.
+pub fn refresh_rate() -> Option<f32> {
+    // SAFETY: no arguments.
+    let hz = unsafe { gc_host_refresh_rate() };
+    (hz.is_finite() && (20.0..=500.0).contains(&hz)).then_some(hz)
 }
 
 /// Whether the system's panel colour is dark.

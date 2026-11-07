@@ -85,6 +85,15 @@ redraws a few bands, not the window. Only the rectangle that changed is copied i
 GPU draws), at most 4 (`RAYON_NUM_THREADS` overrides): on air/OS more cost more in waking than
 they save (8 used 5 % more processor time than 4 in the measurement below).
 
+Frames are paced to the screen's refresh rate (from its display mode; 60 Hz when it doesn't
+say; `GRIDCRAFT_MAX_FPS` sets another rate, 0 none). Haiku has no vertical sync for a window's
+bitmap, and egui's animations (the selection gliding to a new cell, a zoom glide) ask for the
+next frame at once; input that arrives within a refresh of the last frame waits for the next.
+An idle window draws nothing; the marching ants around a copied range ask for a frame every
+60 ms (about 57 ms of processor time a second on the x399). Measured back to back on the x399
+with the workload below (GRIDCRAFT_MAX_FPS=0 against the default): 1,553 against 779 frames and
+3.58 against 1.56 s of GridCraft's processor time.
+
 The window's monitor (`BPrivate::get_display_frame`, an app_server round trip) is remembered
 between frames and asked again only when the window moves or the screens change, and the window
 is asked for its state once a frame.

@@ -1,5 +1,5 @@
 name gridcraft
-version 0.16.0~airos1-3
+version 0.16.0~airos1-4
 architecture x86_64
 summary "Spreadsheet for Excel workbooks"
 description "GridCraft is an open-source spreadsheet for Microsoft Excel workbooks (.xlsx, .xlsm, .xls, .xlsb, .ods and CSV) with an Excel-style ribbon, formulas and functions, formatting, tables, charts, sorting and filtering, and PDF export. This air/OS build hosts GridCraft's interface in a native window, with the system's file panels, clipboard, printers, cursors, locale and file types."
